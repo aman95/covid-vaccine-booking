@@ -7,6 +7,7 @@ from captcha import captcha_builder
 BOOKING_URL = "https://cdn-api.co-vin.in/api/v2/appointment/schedule"
 BENEFICIARIES_URL = "https://cdn-api.co-vin.in/api/v2/appointment/beneficiaries"
 CALENDAR_URL_DISTRICT = "https://cdn-api.co-vin.in/api/v2/appointment/sessions/calendarByDistrict?district_id={0}&date={1}"
+SESSION_URL_DISTRICT = "https://cdn-api.co-vin.in/api/v2/appointment/sessions/findByDistrict?district_id={0}&date={1}"
 CALENDAR_URL_PINCODE = "https://cdn-api.co-vin.in/api/v2/appointment/sessions/calendarByPin?pincode={0}&date={1}"
 CAPTCHA_URL = "https://cdn-api.co-vin.in/api/v2/auth/getRecaptcha"
 OTP_PUBLIC_URL = 'https://cdn-api.co-vin.in/api/v2/auth/public/generateOTP'
@@ -33,13 +34,13 @@ else:
 
 def viable_options(resp, minimum_slots, min_age_booking, fee_type, dose):
     options = []
+    age_limit = 45 if min_age_booking > 44 else 18
     if len(resp['centers']) >= 0:
         for center in resp['centers']:
             for session in center['sessions']:
-                # availability = session['available_capacity']
                 availability = session['available_capacity_dose1'] if dose == 1 else session['available_capacity_dose2']
                 if (availability >= minimum_slots) \
-                        and (session['min_age_limit'] <= min_age_booking)\
+                        and (session['min_age_limit'] == age_limit)\
                         and (center['fee_type'] in fee_type):
                     out = {
                         'name': center['name'],
@@ -55,6 +56,35 @@ def viable_options(resp, minimum_slots, min_age_booking, fee_type, dose):
 
                 else:
                     pass
+    else:
+        pass
+
+    return options
+
+def viable_options_for_sessions(resp, minimum_slots, min_age_booking, fee_type, dose):
+    options = []
+    age_limit = 45 if min_age_booking > 44 else 18
+    if len(resp['sessions']) >= 0:
+        for session in resp['sessions']:
+            # availability = session['available_capacity']
+            availability = session['available_capacity_dose1'] if dose == 1 else session['available_capacity_dose2']
+            if (availability >= minimum_slots) \
+                    and (session['min_age_limit'] == age_limit)\
+                    and (session['fee_type'] in fee_type):
+                out = {
+                    'name': session['name'],
+                    'district': session['district_name'],
+                    'pincode': session['pincode'],
+                    'center_id': session['center_id'],
+                    'available': availability,
+                    'date': session['date'],
+                    'slots': session['slots'],
+                    'session_id': session['session_id']
+                }
+                options.append(out)
+
+            else:
+                pass
     else:
         pass
 
@@ -187,8 +217,12 @@ def collect_user_details(request_header):
     refresh_freq = int(refresh_freq) if refresh_freq and int(refresh_freq) >= 5 else 15
 
     # Get search start date
-    start_date = input(
-        '\nSearch for next seven day starting from when?\nUse 1 for today, 2 for tomorrow, or provide a date in the format DD-MM-YYYY. Default 2: ')
+    if search_option == 2:
+        start_date = input(
+            '\nEnter date in the format DD-MM-YYYY to search for the available sessions: ')
+    else:
+        start_date = input(
+            '\nSearch for next seven day starting from when?\nUse 1 for today, 2 for tomorrow, or provide a date in the format DD-MM-YYYY. Default 2: ')
     if not start_date:
         start_date = 2
     elif start_date in ['1', '2']:
@@ -222,6 +256,48 @@ def collect_user_details(request_header):
 
     return collected_details
 
+def check_sessions_by_district(request_header, vaccine_type, location_dtls, start_date, minimum_slots, min_age_booking, fee_type, dose):
+    """
+    This function
+        1. Takes details required to check vaccination sessions
+        2. Filters result by minimum number of slots available
+        3. Returns False if token is invalid
+        4. Returns list of vaccination centers & slots if available
+    """
+    try:
+        print('===================================================================================')
+        today = datetime.datetime.today()
+        base_url = SESSION_URL_DISTRICT
+
+        if vaccine_type:
+            base_url += f"&vaccine={vaccine_type}"
+
+        options = []
+        for location in location_dtls:
+            resp = requests.get(base_url.format(location['district_id'], start_date), headers=request_header)
+
+            if resp.status_code == 401:
+                print('TOKEN INVALID')
+                return False
+
+            elif resp.status_code == 200:
+                resp = resp.json()
+                if 'sessions' in resp:
+                    print(f"Sessions available in {location['district_name']} on {start_date} as of {today.strftime('%Y-%m-%d %H:%M:%S')}: {len(resp['sessions'])}")
+                    options += viable_options_for_sessions(resp, minimum_slots, min_age_booking, fee_type, dose)
+
+            else:
+                pass
+
+        for location in location_dtls:
+            if location['district_name'] in [option['district'] for option in options]:
+                for _ in range(2):
+                    beep(location['alert_freq'], 150)
+        return options
+
+    except Exception as e:
+        print(str(e))
+        beep(WARNING_BEEP_DURATION[0], WARNING_BEEP_DURATION[1])
 
 def check_calendar_by_district(request_header, vaccine_type, location_dtls, start_date, minimum_slots, min_age_booking, fee_type, dose):
     """
@@ -395,7 +471,7 @@ def check_and_book(request_header, beneficiary_dtls, location_dtls, search_optio
             pass
 
         if search_option == 2:
-            options = check_calendar_by_district(request_header, vaccine_type, location_dtls, start_date,
+            options = check_sessions_by_district(request_header, vaccine_type, location_dtls, start_date,
                                                  minimum_slots, min_age_booking, fee_type, dose)
         else:
             options = check_calendar_by_pincode(request_header, vaccine_type, location_dtls, start_date,
